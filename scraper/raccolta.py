@@ -2,7 +2,7 @@
 """Raccolta aziende panificati e dolciario da fonti aperte.
 
 Fasi:
-  1. scoperta   - OpenStreetMap, regione per regione
+  1. scoperta   - OpenStreetMap regione per regione, espositori delle fiere (TuttoFood, Cibus)
   2. arricchimento - analisi dei siti web (email generiche, P.IVA, prodotti, B2B/B2C)
   3. verifica   - P.IVA su VIES
   4. output     - docs/aziende.json, un record per azienda (sedi raggruppate per sito)
@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from classificazione import settori_da_osm
-from fonti import osm, sito, vies
+from fonti import fiere, osm, sito, vies
 
 RADICE = Path(__file__).resolve().parent.parent
 STATO = RADICE / "data" / "stato.json"
@@ -71,6 +71,30 @@ def scoperta(stato: dict, regioni: list[str], solo_con_sito: bool):
             tenuti += 1
         print(f"  {len(luoghi)} trovati, {tenuti} tenuti")
         time.sleep(5)
+
+
+def scoperta_fiere(stato: dict, cataloghi: list[str]):
+    visti = stato.setdefault("fiere", {})
+    for slug in cataloghi:
+        print(f"[FIERE] {slug} ...", flush=True)
+        try:
+            trovati = fiere.espositori(slug, visti)
+        except Exception as e:
+            print(f"  errore: {e}")
+            continue
+        for d in trovati:
+            nome = d["nome"].title() if d["nome"].isupper() else d["nome"]
+            lid = "fiera:" + urlparse(d["url"]).path.strip("/").split("/")[-1]
+            vecchio = stato["luoghi"].get(lid, {})
+            stato["luoghi"][lid] = {
+                **vecchio, "id": lid, "nome": nome, "indirizzo": d["via"], "comune": d["comune"],
+                "provincia": d["provincia"], "regione": d["regione"], "lat": None, "lon": None,
+                "sito": d["sito"], "telefono": d["telefono"], "email": d["email"], "tag_osm": {},
+                "settori_fonte": d["settori"], "descrizione_fonte": d["descrizione"],
+                "prodotti_fonte": [m.lower() for m in d["merci_fiera"] if fiere.classifica([m])][:10],
+                "fiere": sorted(set(vecchio.get("fiere", [])) | {d["fiera"]}), "visto": oggi(),
+            }
+        print(f"  {len(trovati)} aziende italiane del settore")
 
 
 def arricchimento(stato: dict, max_siti: int, giorni_refresh: int, lavoratori: int):
@@ -129,6 +153,11 @@ def costruisci_output(stato: dict) -> dict:
         settori = set(web.get("settori", []))
         for l in luoghi:
             settori |= settori_da_osm(l.get("tag_osm", {}), l.get("nome", ""))
+            settori |= set(l.get("settori_fonte", []))
+        fiere_az = sorted({f for l in luoghi for f in l.get("fiere", [])})
+        prodotti = list(dict.fromkeys(web.get("prodotti", [])
+                                      + [p for l in luoghi for p in l.get("prodotti_fonte", [])]))[:12]
+        descr_fiera = next((l["descrizione_fonte"] for l in luoghi if l.get("descrizione_fonte")), None)
         email = [e for e in [l.get("email") for l in luoghi] if e] + web.get("email", [])
         sedi = [{k: l.get(k) for k in ("indirizzo", "comune", "provincia", "regione", "lat", "lon")}
                 for l in luoghi]
@@ -145,17 +174,18 @@ def costruisci_output(stato: dict) -> dict:
             "email": list(dict.fromkeys(e.lower() for e in email))[:5],
             "telefono": next((l["telefono"] for l in luoghi if l.get("telefono")), None),
             "settori": sorted(settori),
-            "prodotti": web.get("prodotti", []),
+            "prodotti": prodotti,
             "tipo_vendita": web.get("tipo_vendita"),
-            "descrizione": web.get("descrizione"),
+            "descrizione": web.get("descrizione") or descr_fiera,
+            "fiere": fiere_az,
             "sedi": sedi,
             "regioni": sorted({s["regione"] for s in sedi}),
             # Campi riservati alle integrazioni a pagamento (Atoka, OpenAPI, Cerved...)
             "fatturato": None,
             "dipendenti": None,
             "salute": None,
-            "fonti": ["OpenStreetMap"] + (["sito web"] if web.get("raggiungibile") else [])
-                     + (["VIES"] if v else []),
+            "fonti": (["OpenStreetMap"] if any(l["id"].startswith("osm:") for l in luoghi) else [])
+                     + fiere_az + (["sito web"] if web.get("raggiungibile") else []) + (["VIES"] if v else []),
             "aggiornato": web.get("aggiornato") or base.get("visto"),
         })
 
@@ -173,6 +203,8 @@ def main():
     ap.add_argument("--lavoratori", type=int, default=8, help="siti analizzati in parallelo")
     ap.add_argument("--includi-senza-sito", action="store_true", help="tieni anche i luoghi senza sito web")
     ap.add_argument("--salta-scoperta", action="store_true", help="solo arricchimento dei dati già raccolti")
+    ap.add_argument("--fiere", default="tuttofood-2026,cibus-2024",
+                    help="cataloghi di catalogo.fiereparma.it separati da virgola, 'no' per saltarli")
     args = ap.parse_args()
 
     regioni = list(osm.REGIONI) if args.regioni.strip() in ("", "tutte") else \
@@ -185,6 +217,8 @@ def main():
     try:
         if not args.salta_scoperta:
             scoperta(stato, regioni, solo_con_sito=not args.includi_senza_sito)
+            if args.fiere.strip().lower() not in ("", "no"):
+                scoperta_fiere(stato, [f.strip() for f in args.fiere.split(",") if f.strip()])
         arricchimento(stato, args.max_siti, args.giorni_refresh, args.lavoratori)
         verifica_piva(stato, args.max_vies)
     finally:
