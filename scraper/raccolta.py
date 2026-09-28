@@ -75,6 +75,8 @@ def scoperta(stato: dict, regioni: list[str], solo_con_sito: bool):
 
 def scoperta_fiere(stato: dict, cataloghi: list[str]):
     visti = stato.setdefault("fiere", {})
+    fiere.DEBUG_DIR = RADICE / "data" / "debug"
+    trovati_ora = set()
     for slug in cataloghi:
         print(f"[FIERE] {slug} ...", flush=True)
         try:
@@ -85,6 +87,7 @@ def scoperta_fiere(stato: dict, cataloghi: list[str]):
         for d in trovati:
             nome = d["nome"].title() if d["nome"].isupper() else d["nome"]
             lid = "fiera:" + urlparse(d["url"]).path.strip("/").split("/")[-1]
+            trovati_ora.add(lid)
             vecchio = stato["luoghi"].get(lid, {})
             stato["luoghi"][lid] = {
                 **vecchio, "id": lid, "nome": nome, "indirizzo": d["via"], "comune": d["comune"],
@@ -95,6 +98,9 @@ def scoperta_fiere(stato: dict, cataloghi: list[str]):
                 "fiere": sorted(set(vecchio.get("fiere", [])) | {d["fiera"]}), "visto": oggi(),
             }
         print(f"  {len(trovati)} aziende italiane del settore")
+    if trovati_ora:  # toglie gli espositori di giri precedenti che non superano più i filtri
+        for lid in [k for k in stato["luoghi"] if k.startswith("fiera:") and k not in trovati_ora]:
+            del stato["luoghi"][lid]
 
 
 def arricchimento(stato: dict, max_siti: int, giorni_refresh: int, lavoratori: int):
