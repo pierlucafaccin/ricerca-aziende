@@ -11,6 +11,9 @@ on:
       max_siti:
         description: "Siti da analizzare in questa esecuzione"
         default: "600"
+      fiere:
+        description: "Cataloghi fiere (catalogo.fiereparma.it) separati da virgola, oppure 'no'"
+        default: "tuttofood-2026,cibus-2024"
       salta_scoperta:
         description: "Salta OpenStreetMap e arricchisci solo i dati già raccolti"
         type: boolean
@@ -40,7 +43,7 @@ jobs:
 
       - name: Raccolta e arricchimento
         run: |
-          ARGS="--regioni ${{ inputs.regioni || 'tutte' }} --max-siti ${{ inputs.max_siti || '600' }}"
+          ARGS="--regioni ${{ inputs.regioni || 'tutte' }} --max-siti ${{ inputs.max_siti || '600' }} --fiere ${{ inputs.fiere || 'tuttofood-2026,cibus-2024' }}"
           if [ "${{ inputs.salta_scoperta }}" = "true" ]; then ARGS="$ARGS --salta-scoperta"; fi
           python scraper/raccolta.py $ARGS
 
