@@ -21,10 +21,13 @@ PRODOTTI_RE = "pan|biscott|dolc|cioccol|pasticc|merend|confett|grissin|cracker|t
 NOMI_RE = "dolciari|biscottific|panifici|pasticceri|cioccolat|confetteri|torronific|prodotti da forno|arte bianca"
 
 
-def _query(codice: str) -> str:
+def _query(codice: str, per_nome: bool = False) -> str:
+    # di norma l'area si cerca per codice ISO; se non risponde si riprova per nome
+    area = (f'area["name"~"^{REGIONI[codice].split("-")[0]}"]["admin_level"="4"]["boundary"="administrative"]'
+            if per_nome else f'area["ISO3166-2"="{codice}"]["admin_level"="4"]')
     return f"""
-[out:json][timeout:240];
-area["ISO3166-2"="{codice}"]["admin_level"="4"]->.r;
+[out:json][timeout:300];
+{area}->.r;
 (
   nwr["shop"~"^(bakery|pastry|confectionery|chocolate)$"](area.r);
   nwr["craft"~"^(bakery|confectionery|pastry_chef)$"](area.r);
@@ -44,7 +47,12 @@ def _chiama(query: str) -> dict:
                 r = requests.post(url, data={"data": query}, timeout=300,
                                   headers={"User-Agent": "RicercaAziende/0.1"})
                 if r.status_code == 200:
-                    return r.json()
+                    dati = r.json()
+                    # Overpass segnala i timeout con un "remark" e 0 risultati
+                    if "error" in dati.get("remark", "").lower() or "timed out" in dati.get("remark", "").lower():
+                        ultimo_errore = dati["remark"][:200]
+                        continue
+                    return dati
                 ultimo_errore = f"HTTP {r.status_code} da {url}"
             except requests.RequestException as e:
                 ultimo_errore = str(e)
@@ -79,6 +87,9 @@ def _record(el: dict, codice: str) -> dict | None:
 
 def cerca_regione(codice: str) -> list[dict]:
     dati = _chiama(_query(codice))
+    if not dati.get("elements"):
+        print("  nessun risultato per codice ISO, riprovo cercando la regione per nome")
+        dati = _chiama(_query(codice, per_nome=True))
     risultati = []
     for el in dati.get("elements", []):
         rec = _record(el, codice)
