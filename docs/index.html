@@ -149,6 +149,7 @@ footer { color: var(--muted); font-size: 13px; padding: 0 0 40px; }
       <label class="spunta"><input type="checkbox" id="conEmail"> Con email</label>
       <label class="spunta"><input type="checkbox" id="conPiva"> Con P.IVA verificata</label>
       <label class="spunta"><input type="checkbox" id="conSito"> Sito raggiungibile</label>
+      <label class="spunta"><input type="checkbox" id="inFiera"> Espositore in fiera</label>
 
       <div class="azioni">
         <button class="btn pieno" id="esporta">Esporta CSV</button>
@@ -167,7 +168,7 @@ footer { color: var(--muted); font-size: 13px; padding: 0 0 40px; }
 </main>
 
 <footer class="wrap">
-  Dati da OpenStreetMap (ODbL), siti aziendali e VIES. Fatturato, dipendenti e stato di salute arriveranno con l'integrazione di fonti a pagamento.
+  Dati da OpenStreetMap (ODbL), cataloghi espositori di TuttoFood e Cibus, siti aziendali e VIES. Fatturato, dipendenti e stato di salute arriveranno con l'integrazione di fonti a pagamento.
 </footer>
 
 <script>
@@ -179,7 +180,7 @@ const REGIONI = [
   ["Sicilia","Sic"],["Sardegna","Sar"]
 ];
 const PASSO = 50;
-const f = { q: "", settore: "", vendita: "", regioni: new Set(), prov: "", email: false, piva: false, sito: false };
+const f = { q: "", settore: "", vendita: "", regioni: new Set(), prov: "", email: false, piva: false, sito: false, fiera: false };
 let tutte = [], filtrate = [], mostrate = PASSO;
 
 const $ = id => document.getElementById(id);
@@ -219,6 +220,7 @@ function passa(a, escludiRegione = false) {
   if (f.email && !(a.email||[]).length) return false;
   if (f.piva && !a.piva_verificata) return false;
   if (f.sito && !a.sito_raggiungibile) return false;
+  if (f.fiera && !(a.fiere||[]).length) return false;
   if (!escludiRegione && f.regioni.size && !(a.regioni||[]).some(r => f.regioni.has(r))) return false;
   return true;
 }
@@ -248,7 +250,8 @@ function riga(a, i) {
   const dove = [sede.comune, sede.provincia && `(${sede.provincia})`, a.regioni?.join(", ")].filter(Boolean).join(" ");
   const altre = (a.sedi||[]).length > 1 ? `, ${a.sedi.length} sedi` : "";
   const tags = [...(a.settori||[]).map(s => `<span class="tag grano">${esc(s)}</span>`),
-                a.tipo_vendita ? `<span class="tag">${esc(a.tipo_vendita)}</span>` : ""].join("");
+                a.tipo_vendita ? `<span class="tag">${esc(a.tipo_vendita)}</span>` : "",
+                (a.fiere||[]).length ? `<span class="tag">In fiera</span>` : ""].join("");
   const campo = (titolo, val, largo) => `<div${largo ? ' class="largo"' : ""}><h3>${titolo}</h3><p>${val || '<span class="assente">Non trovato</span>'}</p></div>`;
   const inArrivo = '<span class="assente">Disponibile con l\'integrazione dati</span>';
   const sito = sitoSicuro(a.sito);
@@ -265,7 +268,8 @@ function riga(a, i) {
       ${campo("Telefono", a.telefono ? `<a href="tel:${esc(a.telefono.replace(/\s/g, ""))}">${esc(a.telefono)}</a>` : "")}
       ${campo("Ragione sociale e P.IVA", a.piva ? `${esc(a.ragione_sociale || "")}${a.ragione_sociale ? "<br>" : ""}${esc(a.piva)}${a.piva_verificata ? " (verificata su VIES)" : ""}` : "")}
       ${campo("Sedi", (a.sedi||[]).map(s => esc([s.indirizzo, s.comune, s.provincia].filter(Boolean).join(", ") || s.regione)).join("<br>"))}
-      ${campo("Prodotti citati sul sito", (a.prodotti||[]).length ? `<span class="chips">${a.prodotti.map(p => `<span class="tag">${esc(p)}</span>`).join("")}</span>` : "")}
+      ${(a.fiere||[]).length ? campo("Presente alle fiere", esc(a.fiere.join(", "))) : ""}
+      ${campo("Prodotti", (a.prodotti||[]).length ? `<span class="chips">${a.prodotti.map(p => `<span class="tag">${esc(p)}</span>`).join("")}</span>` : "")}
       ${campo("Fatturato", a.fatturato ?? inArrivo)}
       ${campo("Dipendenti", a.dipendenti ?? inArrivo)}
       ${campo("Stato di salute", a.salute ?? inArrivo)}
@@ -286,12 +290,12 @@ function disegna() {
 }
 
 function esporta() {
-  const col = ["nome","ragione_sociale","piva","piva_verificata","sito","email","telefono","settori","tipo_vendita","prodotti","comune","provincia","regioni","n_sedi","descrizione"];
+  const col = ["nome","ragione_sociale","piva","piva_verificata","sito","email","telefono","settori","tipo_vendita","prodotti","fiere","comune","provincia","regioni","n_sedi","descrizione"];
   const cella = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const righe = filtrate.map(a => {
     const s = (a.sedi||[])[0] || {};
     const v = { ...a, email: (a.email||[]).join(", "), settori: (a.settori||[]).join(", "), prodotti: (a.prodotti||[]).join(", "),
-                regioni: (a.regioni||[]).join(", "), comune: s.comune, provincia: s.provincia, n_sedi: (a.sedi||[]).length,
+                regioni: (a.regioni||[]).join(", "), fiere: (a.fiere||[]).join(", "), comune: s.comune, provincia: s.provincia, n_sedi: (a.sedi||[]).length,
                 piva_verificata: a.piva_verificata ? "sì" : "" };
     return col.map(c => cella(v[c])).join(";");
   });
@@ -314,7 +318,7 @@ $("barre").addEventListener("click", e => {
   b.setAttribute("aria-pressed", f.regioni.has(r)); applica();
 });
 $("prov").addEventListener("change", e => { f.prov = e.target.value; disegnaBarre(); applica(); });
-[["conEmail","email"],["conPiva","piva"],["conSito","sito"]].forEach(([id, k]) =>
+[["conEmail","email"],["conPiva","piva"],["conSito","sito"],["inFiera","fiera"]].forEach(([id, k]) =>
   $(id).addEventListener("change", e => { f[k] = e.target.checked; disegnaBarre(); applica(); }));
 $("lista").addEventListener("click", e => {
   const b = e.target.closest(".riga > button"); if (!b) return;
@@ -324,8 +328,8 @@ $("lista").addEventListener("click", e => {
 $("altri").addEventListener("click", () => { mostrate += PASSO; disegna(); });
 $("esporta").addEventListener("click", esporta);
 $("azzera").addEventListener("click", () => {
-  Object.assign(f, { q: "", settore: "", vendita: "", prov: "", email: false, piva: false, sito: false }); f.regioni.clear();
-  $("q").value = ""; $("prov").value = ""; ["conEmail","conPiva","conSito"].forEach(id => $(id).checked = false);
+  Object.assign(f, { q: "", settore: "", vendita: "", prov: "", email: false, piva: false, sito: false, fiera: false }); f.regioni.clear();
+  $("q").value = ""; $("prov").value = ""; ["conEmail","conPiva","conSito","inFiera"].forEach(id => $(id).checked = false);
   document.querySelectorAll(".scelte").forEach(g => g.querySelectorAll("button").forEach((x, i) => x.setAttribute("aria-pressed", i === 0)));
   disegnaBarre(); applica();
 });
