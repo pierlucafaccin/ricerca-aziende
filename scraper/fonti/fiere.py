@@ -21,7 +21,8 @@ from fonti.sito import email_generica
 
 BASE = "https://catalogo.fiereparma.it"
 UA = "RicercaAziendeBot/0.1 (ricerca contatti B2B; rispetta robots.txt)"
-PAUSA = 1.5          # secondi tra una richiesta e l'altra
+PAUSA = 3.0          # secondi tra una richiesta e l'altra
+MAX_ERRORI_DI_FILA = 5  # dopo tanti errori consecutivi il sito ci sta limitando: ci si ferma
 MAX_PAGINE = 150     # pagine di risultati per filtro
 DEBUG_DIR = None     # impostata da raccolta.py (data/debug)
 
@@ -106,8 +107,20 @@ class Catalogo:
         except requests.RequestException:
             self.robots.parse([])
         self._ultima = 0.0
+        self.errori_di_fila = 0
+        self.bloccato = False
+
+    def _errore(self, messaggio: str):
+        self.errori_di_fila += 1
+        print(f"  {messaggio}")
+        if self.errori_di_fila >= MAX_ERRORI_DI_FILA and not self.bloccato:
+            self.bloccato = True
+            print(f"  {MAX_ERRORI_DI_FILA} errori di fila: il catalogo sta limitando le richieste, "
+                  "mi fermo e riprendo al prossimo giro")
 
     def get(self, url: str, params=None) -> BeautifulSoup | None:
+        if self.bloccato:
+            return None
         if not self.robots.can_fetch(UA, url):
             print(f"  robots.txt vieta {url}")
             return None
@@ -116,15 +129,20 @@ class Catalogo:
             time.sleep(attesa)
         self._ultima = time.time()
         try:
-            r = self.sess.get(url, params=params, timeout=30)
-            if r.status_code != 200:
-                print(f"  HTTP {r.status_code} su {r.url}")
+            r = self.sess.get(url, params=params, timeout=(10, 30))
+            if r.status_code in (403, 429, 503):
+                self.errori_di_fila = MAX_ERRORI_DI_FILA - 1  # segnale esplicito di limite: stop subito
+                self._errore(f"HTTP {r.status_code} su {r.url}")
                 return None
+            if r.status_code != 200:
+                self._errore(f"HTTP {r.status_code} su {r.url}")
+                return None
+            self.errori_di_fila = 0
             if "charset" not in r.headers.get("content-type", "").lower():
                 r.encoding = "utf-8"
             return BeautifulSoup(r.text, "html.parser")
         except requests.RequestException as e:
-            print(f"  errore su {url}: {e}")
+            self._errore(f"errore su {url}: {type(e).__name__}")
             return None
 
 
@@ -320,7 +338,7 @@ def _elenco_espositori(home: BeautifulSoup) -> dict[str, str]:
     return out
 
 
-def espositori(slug: str, gia_visti: dict | None = None, max_nuove: int = 2000, salva=None) -> list[dict]:
+def espositori(slug: str, gia_visti: dict | None = None, max_nuove: int = 500, salva=None) -> list[dict]:
     """Aziende italiane di panificati/dolciario esposte alla fiera `slug`.
 
     Legge l'elenco completo degli espositori, apre al massimo `max_nuove` schede non ancora
@@ -342,11 +360,13 @@ def espositori(slug: str, gia_visti: dict | None = None, max_nuove: int = 2000, 
     in_cache = sum(1 for u in ordinati if u in gia_visti)
     lette = 0
     for url in ordinati:
-        if url in gia_visti or lette >= max_nuove:
+        if cat.bloccato or lette >= max_nuove:
+            break
+        if url in gia_visti:
             continue
         if _scheda(cat, url, gia_visti) is not None:
             lette += 1
-            if salva and lette % 200 == 0:
+            if salva and lette % 100 == 0:
                 salva()
     mancanti = sum(1 for u in ordinati if u not in gia_visti)
     print(f"  {len(elenco)} espositori in elenco: {in_cache} già letti, {lette} letti ora, {mancanti} da leggere nei prossimi giri")
