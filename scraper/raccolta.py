@@ -65,7 +65,8 @@ def dominio(url: str | None) -> str | None:
     return host
 
 
-MIN_LOCALI_CATENA = 3  # sotto questa soglia un ristorante non è "ristorazione organizzata"
+MIN_LOCALI_CATENA = 3       # locali con lo stesso marchio per parlare di catena
+MIN_LOCALI_STESSO_SITO = 2  # lo stesso sito web su due locali distinti è già un indizio forte
 
 
 def _norm_marchio(m: str) -> str:
@@ -89,8 +90,11 @@ def raggruppa(luoghi) -> dict[str, list[dict]]:
             chiave = d or l["id"]
         gruppi.setdefault(chiave, []).append(l)
     # la ristorazione conta solo se è una catena
+    def catena(k, v):
+        soglia = MIN_LOCALI_CATENA if k.startswith("marchio:") else MIN_LOCALI_STESSO_SITO
+        return len(v) >= soglia
     return {k: v for k, v in gruppi.items()
-            if any(l.get("categoria") != "ristorazione" for l in v) or len(v) >= MIN_LOCALI_CATENA}
+            if any(l.get("categoria") != "ristorazione" for l in v) or catena(k, v)}
 
 
 def scoperta(stato: dict, regioni: list[str], solo_con_sito: bool, ristorazione: bool):
@@ -271,7 +275,7 @@ def main():
     ap.add_argument("--senza-ristorazione", action="store_true",
                     help="non cercare pizzerie e catene di ristorazione")
     ap.add_argument("--salta-scoperta", action="store_true", help="solo arricchimento dei dati già raccolti")
-    ap.add_argument("--max-schede-fiere", type=int, default=2000,
+    ap.add_argument("--max-schede-fiere", type=int, default=500,
                     help="schede espositore nuove da leggere per fiera a ogni esecuzione")
     ap.add_argument("--fiere", default="tuttofood-2026,cibus-2024",
                     help="cataloghi di catalogo.fiereparma.it separati da virgola, 'no' per saltarli")
