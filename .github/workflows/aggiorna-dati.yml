@@ -14,6 +14,13 @@ on:
       fiere:
         description: "Cataloghi fiere (catalogo.fiereparma.it) separati da virgola, oppure 'no'"
         default: "tuttofood-2026,cibus-2024"
+      max_schede_fiere:
+        description: "Schede espositore nuove da leggere per fiera in questa esecuzione"
+        default: "2000"
+      ristorazione:
+        description: "Cerca anche catene di pizzerie e ristorazione organizzata"
+        type: boolean
+        default: true
       salta_scoperta:
         description: "Salta OpenStreetMap e arricchisci solo i dati già raccolti"
         type: boolean
@@ -43,8 +50,9 @@ jobs:
 
       - name: Raccolta e arricchimento
         run: |
-          ARGS="--regioni ${{ inputs.regioni || 'tutte' }} --max-siti ${{ inputs.max_siti || '600' }} --fiere ${{ inputs.fiere || 'tuttofood-2026,cibus-2024' }}"
+          ARGS="--regioni ${{ inputs.regioni || 'tutte' }} --max-siti ${{ inputs.max_siti || '600' }} --fiere ${{ inputs.fiere || 'tuttofood-2026,cibus-2024' }} --max-schede-fiere ${{ inputs.max_schede_fiere || '2000' }}"
           if [ "${{ inputs.salta_scoperta }}" = "true" ]; then ARGS="$ARGS --salta-scoperta"; fi
+          if [ "${{ inputs.ristorazione }}" = "false" ]; then ARGS="$ARGS --senza-ristorazione"; fi
           python scraper/raccolta.py $ARGS
 
       - name: Salva i risultati nel repository
