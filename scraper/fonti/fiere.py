@@ -177,6 +177,9 @@ def _valore_dopo(righe: list[str], etichetta: str) -> str | None:
 
 def analizza_scheda(soup: BeautifulSoup, url: str) -> dict:
     righe = [r for r in soup.get_text("\n").splitlines() if r.strip()]
+    canonico = soup.find("link", rel="canonical")
+    if canonico and canonico.get("href"):
+        url = canonico["href"]
     h1 = soup.find("h1")
     nome = h1.get_text(" ", strip=True) if h1 else None
 
@@ -241,7 +244,7 @@ def _salva_debug(nome: str, soup: BeautifulSoup | None):
     if soup is None or not DEBUG_DIR:
         return
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-    (DEBUG_DIR / f"{nome}.html").write_text(str(soup)[:400_000], encoding="utf-8")
+    (DEBUG_DIR / f"{nome}.html").write_text(str(soup)[:3_000_000], encoding="utf-8")
 
 
 PAGINAZIONI = [  # modi comuni di chiedere la pagina n; si prova quale funziona
@@ -290,16 +293,78 @@ def _tutte_le_pagine(cat, url_fiera, slug, params, prima) -> set[str]:
     return schede
 
 
-def espositori(slug: str, gia_visti: dict | None = None, max_schede: int = 3000) -> list[dict]:
-    """Restituisce le aziende italiane di panificati/dolciario esposte alla fiera `slug`."""
+PRIORITA_ALTA = ["biscott", "dolc", "forno", "fornai", "panific", "pane", "pasticc", "cioccol", "choco",
+                 "torron", "grissin", "confett", "panetton", "wafer", "crack", "tarall", "piadin", "bakery",
+                 "caramell", "merendin", "arte bianca", "cake", "sweet", "croissant", "lievit", "cantucc"]
+PRIORITA_BASSA = ["salumi", "caseific", "acetaia", "acetific", "frantoi", "oleific", "olio", "olearia",
+                  "cantin", "vini", "birr", "consorzio", "camera di commercio", "regione", "caff", "tartuf",
+                  "pastific", "riseria", "riso", "latter", "prosciutt", "ittic", "pesca", "carni", "conserv",
+                  "acqua", "distiller", "liquor", "editric", "edizioni", "packaging", "co., ltd", "gmbh",
+                  " s.l.", " b.v.", "ministry", "chamber", "association", "agricol"]
+
+
+def _priorita(nome: str) -> int:
+    n = nome.lower()
+    if any(p in n for p in PRIORITA_ALTA):
+        return 0
+    return 2 if any(p in n for p in PRIORITA_BASSA) else 1
+
+
+def _elenco_espositori(home: BeautifulSoup) -> dict[str, str]:
+    """Il menu di ricerca per ragione sociale contiene tutti gli espositori con il link alla scheda."""
+    out = {}
+    for o in home.find_all("option", attrs={"data-url": True}):
+        u = o["data-url"]
+        if "p=" in u or "/azienda/" in u:
+            out[urljoin(BASE, u)] = o.get_text(" ", strip=True)
+    return out
+
+
+def espositori(slug: str, gia_visti: dict | None = None, max_nuove: int = 2000, salva=None) -> list[dict]:
+    """Aziende italiane di panificati/dolciario esposte alla fiera `slug`.
+
+    Legge l'elenco completo degli espositori, apre al massimo `max_nuove` schede non ancora
+    in cache (prima quelle dal nome più promettente) e filtra per settore e nazione.
+    """
     if gia_visti is None:
         gia_visti = {}
     cat = Catalogo()
-    url_fiera = f"{BASE}/manifestazione/{slug}/"
-    home = cat.get(url_fiera)
+    home = cat.get(f"{BASE}/manifestazione/{slug}/")
     _salva_debug(f"{slug}_home", home)
     if home is None:
         return []
+    elenco = _elenco_espositori(home)
+    if not elenco:
+        print("  elenco espositori non trovato, uso i filtri di ricerca")
+        return _espositori_per_filtri(slug, gia_visti, cat, home)
+
+    ordinati = sorted(elenco, key=lambda u: (_priorita(elenco[u]), elenco[u]))
+    in_cache = sum(1 for u in ordinati if u in gia_visti)
+    lette = 0
+    for url in ordinati:
+        if url in gia_visti or lette >= max_nuove:
+            continue
+        if _scheda(cat, url, gia_visti) is not None:
+            lette += 1
+            if salva and lette % 200 == 0:
+                salva()
+    mancanti = sum(1 for u in ordinati if u not in gia_visti)
+    print(f"  {len(elenco)} espositori in elenco: {in_cache} già letti, {lette} letti ora, {mancanti} da leggere nei prossimi giri")
+
+    risultati = []
+    for url in ordinati:
+        dati = gia_visti.get(url)
+        if not dati or dati.get("nazione") not in (None, "ITALIA", "ITALY") or not dati.get("regione"):
+            continue
+        settori_az = classifica(dati["merci_fiera"], dati["settori_fiera"])
+        if settori_az and dati.get("nome"):
+            risultati.append({**dati, "settori": sorted(settori_az), "fiera": NOMI_FIERE.get(slug, slug)})
+    return risultati
+
+
+def _espositori_per_filtri(slug: str, gia_visti: dict, cat: "Catalogo", home: BeautifulSoup,
+                           max_schede: int = 3000) -> list[dict]:
+    url_fiera = f"{BASE}/manifestazione/{slug}/"
 
     # Filtri: dal form di ricerca oppure dai link presenti nelle schede della prima pagina
     candidati = {}
