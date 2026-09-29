@@ -112,8 +112,8 @@ footer { color: var(--muted); font-size: 13px; padding: 0 0 40px; }
 </head>
 <body>
 <header class="wrap">
-  <h1>Chi produce pane e dolci in Italia</h1>
-  <p class="sub" id="sottotitolo">Aziende di panificati e dolciario raccolte da fonti aperte, con sito, contatti aziendali e prodotti.</p>
+  <h1>Chi produce pane e dolci in Italia, e chi li serve</h1>
+  <p class="sub" id="sottotitolo">Produttori di panificati e dolciario e catene di ristorazione, raccolti da fonti aperte con sito, contatti aziendali e prodotti.</p>
   <div class="italia" role="group" aria-label="Filtra per regione">
     <div class="barre" id="barre"></div>
   </div>
@@ -132,6 +132,7 @@ footer { color: var(--muted); font-size: 13px; padding: 0 0 40px; }
         <button aria-pressed="true" data-v="">Tutti</button>
         <button aria-pressed="false" data-v="Panificati">Panificati</button>
         <button aria-pressed="false" data-v="Dolciario">Dolciario</button>
+        <button aria-pressed="false" data-v="Ristorazione organizzata">Ristorazione</button>
       </div>
 
       <label class="campo" id="l-vendita">Tipo di vendita</label>
@@ -199,7 +200,7 @@ async function carica() {
       _prov: new Set((a.sedi||[]).map(s => s.provincia).filter(Boolean)) }));
     if (d.aggiornato) {
       const data = new Date(d.aggiornato).toLocaleDateString("it-IT", { day: "numeric", month: "long", year: "numeric" });
-      $("sottotitolo").textContent = `Aziende di panificati e dolciario raccolte da fonti aperte, con sito, contatti aziendali e prodotti. Dati aggiornati il ${data}.`;
+      $("sottotitolo").textContent = `Produttori di panificati e dolciario e catene di ristorazione, raccolti da fonti aperte con sito, contatti aziendali e prodotti. Dati aggiornati il ${data}.`;
     }
     const prov = [...new Set(tutte.flatMap(a => [...a._prov]))].sort();
     $("prov").insertAdjacentHTML("beforeend", prov.map(p => `<option>${esc(p)}</option>`).join(""));
@@ -248,7 +249,7 @@ function applica() {
 function riga(a, i) {
   const sede = (a.sedi||[])[0] || {};
   const dove = [sede.comune, sede.provincia && `(${sede.provincia})`, a.regioni?.join(", ")].filter(Boolean).join(" ");
-  const altre = (a.sedi||[]).length > 1 ? `, ${a.sedi.length} sedi` : "";
+  const altre = a.locali ? `, ${a.locali} locali` : (a.sedi||[]).length > 1 ? `, ${a.sedi.length} sedi` : "";
   const tags = [...(a.settori||[]).map(s => `<span class="tag grano">${esc(s)}</span>`),
                 a.tipo_vendita ? `<span class="tag">${esc(a.tipo_vendita)}</span>` : "",
                 (a.fiere||[]).length ? `<span class="tag">In fiera</span>` : ""].join("");
@@ -290,7 +291,7 @@ function disegna() {
 }
 
 function esporta() {
-  const col = ["nome","ragione_sociale","piva","piva_verificata","sito","email","telefono","settori","tipo_vendita","prodotti","fiere","comune","provincia","regioni","n_sedi","descrizione"];
+  const col = ["nome","ragione_sociale","piva","piva_verificata","sito","email","telefono","settori","tipo_vendita","prodotti","fiere","locali","comune","provincia","regioni","n_sedi","descrizione"];
   const cella = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const righe = filtrate.map(a => {
     const s = (a.sedi||[])[0] || {};
