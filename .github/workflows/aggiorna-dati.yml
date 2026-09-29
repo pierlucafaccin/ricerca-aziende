@@ -16,7 +16,7 @@ on:
         default: "tuttofood-2026,cibus-2024"
       max_schede_fiere:
         description: "Schede espositore nuove da leggere per fiera in questa esecuzione"
-        default: "2000"
+        default: "500"
       ristorazione:
         description: "Cerca anche catene di pizzerie e ristorazione organizzata"
         type: boolean
@@ -36,7 +36,7 @@ concurrency:
 jobs:
   raccolta:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +50,7 @@ jobs:
 
       - name: Raccolta e arricchimento
         run: |
-          ARGS="--regioni ${{ inputs.regioni || 'tutte' }} --max-siti ${{ inputs.max_siti || '600' }} --fiere ${{ inputs.fiere || 'tuttofood-2026,cibus-2024' }} --max-schede-fiere ${{ inputs.max_schede_fiere || '2000' }}"
+          ARGS="--regioni ${{ inputs.regioni || 'tutte' }} --max-siti ${{ inputs.max_siti || '600' }} --fiere ${{ inputs.fiere || 'tuttofood-2026,cibus-2024' }} --max-schede-fiere ${{ inputs.max_schede_fiere || '500' }}"
           if [ "${{ inputs.salta_scoperta }}" = "true" ]; then ARGS="$ARGS --salta-scoperta"; fi
           if [ "${{ inputs.ristorazione }}" = "false" ]; then ARGS="$ARGS --senza-ristorazione"; fi
           python scraper/raccolta.py $ARGS
