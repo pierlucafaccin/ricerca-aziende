@@ -5,12 +5,13 @@ Fasi:
   1. scoperta   - OpenStreetMap regione per regione, espositori delle fiere (TuttoFood, Cibus)
   2. arricchimento - analisi dei siti web (email generiche, P.IVA, prodotti, B2B/B2C)
   3. verifica   - P.IVA su VIES
-  4. output     - docs/aziende.json, un record per azienda (sedi raggruppate per sito)
+  4. output     - docs/aziende.json, un record per azienda (sedi raggruppate per sito o marchio)
 
 Lo stato completo sta in data/stato.json, così ogni esecuzione riprende da dove
 si era fermata e riarricchisce solo i siti più vecchi di --giorni-refresh.
 """
 import argparse
+import re
 import datetime as dt
 import json
 import time
@@ -45,16 +46,54 @@ def salva(path: Path, obj, compatto=False):
     tmp.replace(path)
 
 
+# Profili social e pagine di servizi condivisi: non identificano un'azienda
+SOCIAL = ("facebook.com", "instagram.com", "linktr.ee", "tripadvisor.", "google.", "goo.gl",
+          "youtube.com", "tiktok.com", "wa.me", "whatsapp.com", "twitter.com", "x.com", "linkedin.com",
+          "paginegialle.it", "just-eat", "deliveroo", "glovo")
+
+
 def dominio(url: str | None) -> str | None:
+    """Dominio del sito, usato per unire le sedi della stessa azienda (None per i social)."""
     if not url:
         return None
     if "://" not in url:
         url = "https://" + url
     host = urlparse(url.strip()).netloc.lower().split(":")[0]
-    return host[4:] if host.startswith("www.") else host or None
+    host = host[4:] if host.startswith("www.") else host
+    if not host or any(host == x or host.endswith("." + x) or x.endswith(".") and x in host for x in SOCIAL):
+        return None
+    return host
 
 
-def scoperta(stato: dict, regioni: list[str], solo_con_sito: bool):
+MIN_LOCALI_CATENA = 3  # sotto questa soglia un ristorante non è "ristorazione organizzata"
+
+
+def _norm_marchio(m: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9àèéìòù ]", " ", m.lower()).replace("pizzeria", "").split())
+
+
+def raggruppa(luoghi) -> dict[str, list[dict]]:
+    """Unisce le sedi della stessa azienda: per sito web e, per la ristorazione, anche per marchio."""
+    luoghi = list(luoghi)
+    marchio_di_dominio = {}
+    for l in luoghi:
+        if l.get("categoria") == "ristorazione" and l.get("brand") and dominio(l.get("sito")):
+            marchio_di_dominio.setdefault(dominio(l["sito"]), _norm_marchio(l["brand"]))
+    gruppi: dict[str, list[dict]] = {}
+    for l in luoghi:
+        d = dominio(l.get("sito"))
+        if l.get("categoria") == "ristorazione":
+            m = _norm_marchio(l["brand"]) if l.get("brand") else marchio_di_dominio.get(d)
+            chiave = f"marchio:{m}" if m else (d or l["id"])
+        else:
+            chiave = d or l["id"]
+        gruppi.setdefault(chiave, []).append(l)
+    # la ristorazione conta solo se è una catena
+    return {k: v for k, v in gruppi.items()
+            if any(l.get("categoria") != "ristorazione" for l in v) or len(v) >= MIN_LOCALI_CATENA}
+
+
+def scoperta(stato: dict, regioni: list[str], solo_con_sito: bool, ristorazione: bool):
     for codice in regioni:
         print(f"[OSM] {codice} {osm.REGIONI[codice]} ...", flush=True)
         try:
@@ -64,23 +103,40 @@ def scoperta(stato: dict, regioni: list[str], solo_con_sito: bool):
             continue
         tenuti = 0
         for l in luoghi:
-            if solo_con_sito and not dominio(l["sito"]):
+            if solo_con_sito and not l.get("sito"):
                 continue
             l["visto"] = oggi()
             stato["luoghi"][l["id"]] = {**stato["luoghi"].get(l["id"], {}), **l}
             tenuti += 1
-        print(f"  {len(luoghi)} trovati, {tenuti} tenuti")
+        print(f"  {len(luoghi)} trovati, {tenuti} tenuti (con sito web)")
+        time.sleep(5)
+        if not ristorazione:
+            continue
+        try:
+            locali = osm.cerca_ristorazione(codice)
+        except Exception as e:
+            print(f"  ristorazione, errore: {e}")
+            continue
+        nuovi = 0
+        for l in locali:
+            esistente = stato["luoghi"].get(l["id"])
+            if not (l.get("sito") or l.get("brand")) or (esistente and esistente.get("categoria") != "ristorazione"):
+                continue  # senza sito né marchio, oppure già presente come produttore
+            l["visto"] = oggi()
+            stato["luoghi"][l["id"]] = {**stato["luoghi"].get(l["id"], {}), **l}
+            nuovi += 1
+        print(f"  ristorazione: {len(locali)} locali trovati, {nuovi} con sito o marchio")
         time.sleep(5)
 
 
-def scoperta_fiere(stato: dict, cataloghi: list[str]):
+def scoperta_fiere(stato: dict, cataloghi: list[str], max_schede: int):
     visti = stato.setdefault("fiere", {})
     fiere.DEBUG_DIR = RADICE / "data" / "debug"
     trovati_ora = set()
     for slug in cataloghi:
         print(f"[FIERE] {slug} ...", flush=True)
         try:
-            trovati = fiere.espositori(slug, visti)
+            trovati = fiere.espositori(slug, visti, max_schede, salva=lambda: salva(STATO, stato))
         except Exception as e:
             print(f"  errore: {e}")
             continue
@@ -106,10 +162,11 @@ def scoperta_fiere(stato: dict, cataloghi: list[str]):
 def arricchimento(stato: dict, max_siti: int, giorni_refresh: int, lavoratori: int):
     limite = (dt.date.today() - dt.timedelta(days=giorni_refresh)).isoformat()
     siti = {}
-    for l in stato["luoghi"].values():
-        d = dominio(l.get("sito"))
-        if d:
-            siti.setdefault(d, l["sito"])
+    for gruppo in raggruppa(stato["luoghi"].values()).values():
+        for l in gruppo:
+            d = dominio(l.get("sito"))
+            if d:
+                siti.setdefault(d, l["sito"])
 
     da_fare = [d for d in siti if stato["siti"].get(d, {}).get("aggiornato", "") < limite]
     da_fare.sort(key=lambda d: stato["siti"].get(d, {}).get("aggiornato", ""))  # mai visti per primi
@@ -144,15 +201,14 @@ def verifica_piva(stato: dict, max_verifiche: int):
 
 
 def costruisci_output(stato: dict) -> dict:
-    gruppi: dict[str, list[dict]] = {}
-    for l in stato["luoghi"].values():
-        gruppi.setdefault(dominio(l.get("sito")) or l["id"], []).append(l)
+    gruppi = raggruppa(stato["luoghi"].values())
 
     aziende = []
     for chiave, luoghi in gruppi.items():
         luoghi.sort(key=lambda l: l["id"])
         base = luoghi[0]
-        web = stato["siti"].get(chiave, {})
+        domini = [d for l in luoghi if (d := dominio(l.get("sito")))]
+        web = next((stato["siti"][d] for d in domini if d in stato["siti"]), {})
         piva = web.get("piva")
         v = stato["vies"].get(piva, {}) if piva else {}
 
@@ -160,6 +216,8 @@ def costruisci_output(stato: dict) -> dict:
         for l in luoghi:
             settori |= settori_da_osm(l.get("tag_osm", {}), l.get("nome", ""))
             settori |= set(l.get("settori_fonte", []))
+            if l.get("categoria") == "ristorazione":
+                settori.add("Ristorazione organizzata")
         fiere_az = sorted({f for l in luoghi for f in l.get("fiere", [])})
         prodotti = list(dict.fromkeys(web.get("prodotti", [])
                                       + [p for l in luoghi for p in l.get("prodotti_fonte", [])]))[:12]
@@ -170,14 +228,16 @@ def costruisci_output(stato: dict) -> dict:
 
         aziende.append({
             "id": chiave,
-            "nome": base["nome"],
+            "nome": next((l["brand"] for l in luoghi if l.get("categoria") == "ristorazione" and l.get("brand")),
+                         None) or base["nome"],
             "ragione_sociale": v.get("ragione_sociale"),
             "piva": piva,
             "piva_verificata": v.get("valida"),
             "sede_legale": v.get("indirizzo"),
-            "sito": web.get("url") or base.get("sito"),
+            "sito": web.get("url") or next((l["sito"] for l in luoghi if l.get("sito")), None),
             "sito_raggiungibile": web.get("raggiungibile"),
             "email": list(dict.fromkeys(e.lower() for e in email))[:5],
+            "locali": len(luoghi) if any(l.get("categoria") == "ristorazione" for l in luoghi) else None,
             "telefono": next((l["telefono"] for l in luoghi if l.get("telefono")), None),
             "settori": sorted(settori),
             "prodotti": prodotti,
@@ -208,7 +268,11 @@ def main():
     ap.add_argument("--giorni-refresh", type=int, default=60, help="dopo quanti giorni rianalizzare un sito")
     ap.add_argument("--lavoratori", type=int, default=8, help="siti analizzati in parallelo")
     ap.add_argument("--includi-senza-sito", action="store_true", help="tieni anche i luoghi senza sito web")
+    ap.add_argument("--senza-ristorazione", action="store_true",
+                    help="non cercare pizzerie e catene di ristorazione")
     ap.add_argument("--salta-scoperta", action="store_true", help="solo arricchimento dei dati già raccolti")
+    ap.add_argument("--max-schede-fiere", type=int, default=2000,
+                    help="schede espositore nuove da leggere per fiera a ogni esecuzione")
     ap.add_argument("--fiere", default="tuttofood-2026,cibus-2024",
                     help="cataloghi di catalogo.fiereparma.it separati da virgola, 'no' per saltarli")
     args = ap.parse_args()
@@ -222,9 +286,10 @@ def main():
     stato = carica(STATO, {"luoghi": {}, "siti": {}, "vies": {}})
     try:
         if not args.salta_scoperta:
-            scoperta(stato, regioni, solo_con_sito=not args.includi_senza_sito)
+            scoperta(stato, regioni, solo_con_sito=not args.includi_senza_sito,
+                     ristorazione=not args.senza_ristorazione)
             if args.fiere.strip().lower() not in ("", "no"):
-                scoperta_fiere(stato, [f.strip() for f in args.fiere.split(",") if f.strip()])
+                scoperta_fiere(stato, [f.strip() for f in args.fiere.split(",") if f.strip()], args.max_schede_fiere)
         arricchimento(stato, args.max_siti, args.giorni_refresh, args.lavoratori)
         verifica_piva(stato, args.max_vies)
     finally:
