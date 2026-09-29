@@ -21,19 +21,32 @@ PRODOTTI_RE = "pan|biscott|dolc|cioccol|pasticc|merend|confett|grissin|cracker|t
 NOMI_RE = "dolciari|biscottific|panifici|pasticceri|cioccolat|confetteri|torronific|prodotti da forno|arte bianca"
 
 
-def _query(codice: str, per_nome: bool = False) -> str:
+def _area(codice: str, per_nome: bool) -> str:
     # di norma l'area si cerca per codice ISO; se non risponde si riprova per nome
-    area = (f'area["name"~"^{REGIONI[codice].split("-")[0]}"]["admin_level"="4"]["boundary"="administrative"]'
-            if per_nome else f'area["ISO3166-2"="{codice}"]["admin_level"="4"]')
-    return f"""
-[out:json][timeout:300];
-{area}->.r;
-(
+    if per_nome:
+        return f'area["name"~"^{REGIONI[codice].split("-")[0]}"]["admin_level"="4"]["boundary"="administrative"]'
+    return f'area["ISO3166-2"="{codice}"]["admin_level"="4"]'
+
+
+CORPO_PRODUTTORI = f"""
   nwr["shop"~"^(bakery|pastry|confectionery|chocolate)$"](area.r);
   nwr["craft"~"^(bakery|confectionery|pastry_chef)$"](area.r);
   nwr["industrial"~"^(bakery|food|food_industry)$"](area.r);
   nwr["man_made"="works"]["product"~"{PRODOTTI_RE}",i](area.r);
-  nwr["name"~"{NOMI_RE}",i]["website"](area.r);
+  nwr["name"~"{NOMI_RE}",i]["website"](area.r);"""
+
+# Ristorazione organizzata: pizzerie e locali di catena (con marchio o sito)
+CORPO_RISTORAZIONE = """
+  nwr["amenity"~"^(restaurant|fast_food)$"]["cuisine"~"pizza",i]["website"](area.r);
+  nwr["amenity"~"^(restaurant|fast_food)$"]["cuisine"~"pizza",i]["brand"](area.r);
+  nwr["amenity"~"^(restaurant|fast_food|cafe)$"]["brand"](area.r);"""
+
+
+def _query(codice: str, corpo: str, per_nome: bool = False) -> str:
+    return f"""
+[out:json][timeout:300];
+{_area(codice, per_nome)}->.r;
+({corpo}
 );
 out center tags;
 """
@@ -80,19 +93,28 @@ def _record(el: dict, codice: str) -> dict | None:
         "sito": tags.get("website") or tags.get("contact:website") or tags.get("url"),
         "telefono": tags.get("phone") or tags.get("contact:phone"),
         "email": tags.get("email") or tags.get("contact:email"),
+        "brand": tags.get("brand"),
         "tag_osm": {k: v for k, v in tags.items()
-                    if k in ("shop", "craft", "industrial", "man_made", "product", "cuisine")},
+                    if k in ("shop", "craft", "industrial", "man_made", "product", "cuisine", "amenity")},
     }
 
 
-def cerca_regione(codice: str) -> list[dict]:
-    dati = _chiama(_query(codice))
+def _cerca(codice: str, corpo: str) -> list[dict]:
+    dati = _chiama(_query(codice, corpo))
     if not dati.get("elements"):
         print("  nessun risultato per codice ISO, riprovo cercando la regione per nome")
-        dati = _chiama(_query(codice, per_nome=True))
-    risultati = []
-    for el in dati.get("elements", []):
-        rec = _record(el, codice)
-        if rec:
-            risultati.append(rec)
+        dati = _chiama(_query(codice, corpo, per_nome=True))
+    return [r for el in dati.get("elements", []) if (r := _record(el, codice))]
+
+
+def cerca_regione(codice: str) -> list[dict]:
+    """Produttori: forni, pasticcerie, industrie dolciarie e da forno."""
+    return _cerca(codice, CORPO_PRODUTTORI)
+
+
+def cerca_ristorazione(codice: str) -> list[dict]:
+    """Pizzerie e locali di catena; le catene si riconoscono poi raggruppando per marchio o sito."""
+    risultati = _cerca(codice, CORPO_RISTORAZIONE)
+    for r in risultati:
+        r["categoria"] = "ristorazione"
     return risultati
